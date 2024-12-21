@@ -7,6 +7,11 @@
 #include <EEPROM.h>
 #include <SPI.h>
 
+#include <curl/curl.h>
+#include <string>
+#include <iostream>
+#include <regex>
+
 #define TEST_HOST "Anilist.com"
 #define MAX_COORDINATES 624
 
@@ -105,64 +110,44 @@ void setup() {
   }
 }
 
-void makeHTTPRequest(int* count, int coordinates[MAX_COORDINATES][2]) {
-  const char* anilistAPI = "graphql.anilist.co";
-  if (!client.connect(anilistAPI, 443)) {
-    Serial.println("Connection failed");
-    return;
-  }
+size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
+    ((std::string*)userp)->append((char*)contents, size * nmemb);
+    return size * nmemb;
+}
 
-  Serial.println("Connected to AniList API");
+void makeHTTPRequest() {
+    CURL* curl;
+    CURLcode res;
+    std::string readBuffer;
 
-  // AniList GraphQL query to fetch the calendar data
-  String query = "{\"query\":\"query { MediaListCollection(userName: \\\"YOUR_ANILIST_USERNAME\\\", type: ANIME) { lists { entries { status } } } }\"}";
-  String postRequest = "POST / HTTP/1.1\r\n";
-  postRequest += "Host: " + String(anilistAPI) + "\r\n";
-  postRequest += "Content-Type: application/json\r\n";
-  postRequest += "Content-Length: " + String(query.length()) + "\r\n";
-  postRequest += "Connection: close\r\n\r\n";
-  postRequest += query;
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    curl = curl_easy_init();
+    if(curl) {
+        curl_easy_setopt(curl, CURLOPT_URL, "https://graphql.anilist.co");
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "{\"query\":\"query { MediaListCollection(userName: \\\"YOUR_ANILIST_USERNAME\\\", type: ANIME) { lists { entries { status } } } }\"}");
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L); // Set insecure connection
 
-  client.print(postRequest);
+        res = curl_easy_perform(curl);
+        if(res != CURLE_OK) {
+            fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+        } else {
+            std::cout << "Received response from AniList API" << std::endl;
+            std::cout << readBuffer << std::endl;
 
-  String response = "";
-  while (client.connected() || client.available()) {
-    if (client.available()) {
-      response += client.readStringUntil('\n');
+            // Extract data from the div with class "activity-history"
+            std::regex div_regex("<div class=\"activity-history\">(.*?)</div>");
+            std::smatch match;
+            if (std::regex_search(readBuffer, match, div_regex)) {
+                std::cout << "Activity History: " << match[1] << std::endl;
+            } else {
+                std::cout << "No activity history found." << std::endl;
+            }
+        }
+        curl_easy_cleanup(curl);
     }
-  }
-
-  // Process AniList response
-  Serial.println("Received response from AniList API");
-  Serial.println(response);
-
-  // Parse the response and extract data
-  // Assuming a JSON parser is available
-  // You might need to include and use a JSON library such as ArduinoJson
-
-  // For illustration, pseudo-code to parse JSON response
-  // DynamicJsonDocument doc(1024);
-  // deserializeJson(doc, response);
-  // JsonObject root = doc.as<JsonObject>();
-
-  // Example of extracting data (adapt based on actual response structure)
-  // int index = 0;
-  // for (JsonObject entry : root["data"]["MediaListCollection"]["lists"][0]["entries"].as<JsonArray>()) {
-  //   if (index < MAX_COORDINATES) {
-  //     coordinates[index][0] = extractXCoordinate(entry);
-  //     coordinates[index][1] = extractYCoordinate(entry);
-  //     index++;
-  //   }
-  // }
-  // *count = index;
-
-  // Update display with extracted coordinates
-  for (int i = 0; i < *count; i++) {
-    display.setPoint(coordinates[i][0], (coordinates[i][1] - 6), true);
-  }
-
-  Serial.println("Total number of coordinates:");
-  Serial.println(*count);
+    curl_global_cleanup();
 }
 
 // Helper function to extract attribute value
